@@ -1,7 +1,8 @@
 # busPirate-python-24AA512
 A collection of python functions that interacts with the Bus Pirate in bitbang mode to read and write data to a 24AA512 EEPROM via I2C. 
 
-[Bus Pirate](https://www.sparkfun.com/products/12942) ~$30 
+[Bus Pirate](https://www.sparkfun.com/products/12942) ~$30
+
 [Microchip MPLAB PM3](https://www.microchip.com/Developmenttools/ProductDetails/DV007004) ~$900 
 
 It's a work in progress, but the basics are as follows:
