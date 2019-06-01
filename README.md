@@ -16,7 +16,7 @@ Runs with python 2.7
 python bpBitbang24AA512.py -o 255 
 
 # Read 0x2000 bytes of the EEPROM into a file called temp.bin starting at 0x00 0x00 high and low address 
-python bpBitbang24AA512.py -w -s 0000 -c 8192 -f temp.bin
+python bpBitbang24AA512.py -r -s 0000 -c 8192 -f temp.bin
 
 # Write the data from the test.txt file to the EEPROM starting at address 0x00 0x00
 python bpBitbang24AA512.py -w -f test.text
