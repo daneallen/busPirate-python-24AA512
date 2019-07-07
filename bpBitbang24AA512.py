@@ -43,7 +43,7 @@ class FatalError(RuntimeError):
     def __init__(self, message):
         RuntimeError.__init__(self, message)
 
-def readEEPROM(port, args, startHighAddress=0, startLowAddress=0):
+def readEEPROM(port, startHighAddress=0, startLowAddress=0, limit=0xffff):
 
     #this is all very tuned specific to the 24AA512 EEPROM
     #trying to replicate the following interactive command I2C>{0xa0 0x00 0x00 { 0xa1 r:16
@@ -63,59 +63,53 @@ def readEEPROM(port, args, startHighAddress=0, startLowAddress=0):
     port.write('\xa1')  #write the byte 0xa1
 
     #address setup is complete
-    port.read(50)   #sloppy here, need to do better to keep track of ACK and other data on the port, easy enough to just read everything and start fresh
+    port.read(1000)   #sloppy here, need to do better to keep track of ACK and other data on the port, easy enough to just read everything and start fresh
 
-    print("Beginning the Read process")
-    for i in range(0,int(args.chunk)):
+    for i in range(0,int(limit)-1):     #stop 1 byte short of the desired read amount to send:
         port.write('\x04')      # send read command
         port.write('\x06')      # send the ACK command
+
+    port.write('\x04')          # send read command
+    port.write('\x07')          # send the NACK command
+    port.write('\x03')          # send the STOP command
 
     """
     Significantly faster to read ALL of the data and then post process it
     Tricky bit is removing all of the unwanted 0x01 ACKs
     """
 
-    got = port.read(int(args.chunk)*2)
+    got = port.read(int(limit)*2)
     line = binascii.hexlify(got)
+    #print(line)
     n=2
     line = [line[i:i+n] for i in range(0, len(line), n)]
     data = bytearray()
     for i in line[::n]:
-        data.append(i.decode("hex"))
+        #data.append(i.decode("hex"))
+        data.append(binascii.unhexlify(i))
 
-    if(args.file):
-        outputFile = open(args.file, "wb")
-        outputFile.write(data)
-        print("Data file written!")
-        outputFile.close()
-    else:
-        print(binascii.hexlify(data))
+    return data
 
 def writeEntireEEPROM(port, char):
     temp = []
     for i in range(0,128):
         temp.append(int(char))
 
-    #print(temp)
     highAddress = 0
     lowAddress = 0
 
     for i in range(0,512):
-        pageWrite(port, temp, highAddress, lowAddress)
+        pageWrite(port, bytearray(temp), highAddress, lowAddress)
         time.sleep(0.05)
         lowAddress+=128
         if(lowAddress == 256):
             lowAddress = 0
             highAddress+=1
-    print("All done, flashed the EEPROM with: " + binascii.hexlify(char))
+        return True
 
-def writeEEPROM(port, args, startHighAddress=0, startLowAddress=0):
+def writeEEPROM(port, data, startHighAddress=0, startLowAddress=0):
 
     #can only write up to 128 bytes at a time per the datasheet... the first one and then 127 more which is called a Page write
-    outputFile = open(args.file, "rb")
-    data = bytearray(outputFile.read())
-    outputFile.close()
-
     temp = []
     addressIndexOffset = 0
 
@@ -123,8 +117,7 @@ def writeEEPROM(port, args, startHighAddress=0, startLowAddress=0):
         temp.append(item)
         addressIndexOffset+=1
         if(len(temp)==128):
-            pageWrite(port, temp, startHighAddress, startLowAddress)
-            time.sleep(0.05)
+            pageWrite(port, bytearray(temp), startHighAddress, startLowAddress) #need to convert the temp list to bytearray to keep similar
             startLowAddress+=128
             del temp[:]
 
@@ -141,15 +134,25 @@ def writeEEPROM(port, args, startHighAddress=0, startLowAddress=0):
         startHighAddress+=1
 
     if(startHighAddress <= 255):    #not going to loop back around to the beginning of the memory
-        pageWrite(port, temp, startHighAddress, startLowAddress)
-        time.sleep(0.005)
+        pageWrite(port, bytearray(temp), startHighAddress, startLowAddress)
 
     #should really write a method to verify that the file was successfully written instead of this on faith response
-    print("Sucessfully wrote: " + args.file + " to the EEPROM")
+    return True
 
 def pageWrite(port, data, startHighAddress, startLowAddress):
+    """
+    Need to do more error checking to ensure that the address combination & data length
+    don't result in a fouled data write (i.e. wrap within page boundary) as per the
+    datasheet
+    """
+
     if(len(data) > 129):
+        print("Data to write exceeded 128 bytes, returning false")
         return False
+    elif(len(data)+startLowAddress > 256):
+        print("cannot pageWrite this combination as the data will wrap internally on the the page")
+        return False
+
     else:
         port.write('\x02')                          #Start bit {
         port.write('\x10')                          #tell bus pirate we're going to write 1 byte
@@ -161,12 +164,32 @@ def pageWrite(port, data, startHighAddress, startLowAddress):
         port.write('\x10')                          #tell bus pirate we're going to write 1 byte
         port.write(chr(startLowAddress))            #write the low address byte
 
+        port.read(1000) #placeholder
+
         for x in range(0,len(data)):
             port.write('\x10')                      #tell bus pirate we're going to write 1 byte
             port.write(chr(data[x]))                #write the desired byte
-            time.sleep(.001)                        #this is a guess but seems to be enough time to write reliably
+
+            """
+            #Per the datasheet, should simply wait for an ACK back to determine that the write was sucessful
+            if(int(binascii.hexlify(port.read(2)),16)!= 0x0100):
+                print("error in page write")    # when run this took significantly longer! Probably need to go back and read page by page for valid data.
+            """
 
         port.write('\x03')                          #send the STOP bit
+        time.sleep(.02)
+        return True
+
+
+def compareByteArray(inData, outData):
+    if(len(inData) != len(outData)):
+        print("compareByteArray failed the length check")
+        return False
+
+    for i in range(0,len(inData)):
+        if( int(inData[i]) != (outData[i]) ):
+            print("compareByteArray failed a single byte check at ["+str(i)+"]: " + str(int(inData[i]))+ " != " + str(int(outData[i])))
+            return False;
     return True
 
 
@@ -243,10 +266,6 @@ def main():
                 break
             #print(got),
 
-        #print "Current I2C version: "
-        #port.write('\x01')
-        #got = port.readline()
-
         if(args.start != 0):
             startHighAddress = int(args.start[:2],16)
             startLowAddress = int(args.start[2:4],16)
@@ -258,9 +277,25 @@ def main():
         port.write('\x4c')
 
         if(args.read):
-            readEEPROM(port, args, startHighAddress, startLowAddress)
+            data = readEEPROM(port, startHighAddress, startLowAddress, int(args.chunk))
+            if(args.file):
+                outputFile = open(args.file, "wb")
+                outputFile.write(data)
+                print("Data file written!")
+                outputFile.close()
+            else:
+                print(binascii.hexlify(data))
+
         elif(args.write):
-            writeEEPROM(port, args, startHighAddress, startLowAddress)
+            outputFile = open(args.file, "rb")
+            data = bytearray(outputFile.read())
+            outputFile.close()
+            if(len(data) > 0xffff):
+                print("Data file to write is too large for the EEPROM, exiting now.")
+                return
+            else:
+                if(writeEEPROM(port, data, startHighAddress, startLowAddress)):
+                    print("Sucessfully wrote " + args.file + " to the EEPROM")
         elif(args.overwrite):
             print(int(args.overwrite))
             writeEntireEEPROM(port, args.overwrite)
